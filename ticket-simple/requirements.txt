@@ -1,0 +1,8 @@
+# Instale tudo de uma vez:
+#   pip install -r requirements.txt
+
+fastapi==0.111.0
+uvicorn==0.29.0
+mysql-connector-python==8.4.0
+bcrypt==4.1.3
+pydantic==2.7.1
