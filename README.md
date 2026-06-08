@@ -46,7 +46,7 @@ pip install -r requirements.txt
 
 ## Rodando o projeto
 
-**Windows:** execute o `start.bat` (Windows) ou `start.sh` (Mac e Linux).
+Execute o `start.bat` (Windows) ou `start.sh` (Mac e Linux).
 
 Depois é só abrir o `frontend.html` no navegador ou usar os exemplos abaixo.
 
