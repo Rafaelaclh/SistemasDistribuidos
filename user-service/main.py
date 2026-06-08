@@ -1,17 +1,4 @@
-"""
-Serviço de Usuários
-  Instância 1: porta 8001
-  Instância 2: porta 8011
-
-  POST /register  → cadastro (público)
-  POST /login     → login — retorna JWT (público)
-  GET  /users     → listar usuários (admin)
-  GET  /health    → health check
-
-Para rodar:
-  python main.py
-  python main.py --port 8011
-"""
+"""Serviço de Usuários — portas 8001 / 8011."""
 import sys
 import time
 import logging
@@ -81,7 +68,6 @@ def health():
 
 @app.post("/register", status_code=201)
 def register(body: RegisterRequest):
-    """Cadastra um novo usuário."""
     if body.role not in ("user", "admin"):
         raise HTTPException(400, "Role deve ser 'user' ou 'admin'")
     hashed = bcrypt.hashpw(body.password.encode(), bcrypt.gensalt()).decode()
@@ -105,7 +91,6 @@ def register(body: RegisterRequest):
 
 @app.post("/login")
 def login(body: LoginRequest):
-    """Login — retorna JWT."""
     try:
         conn = get_connection()
         row = conn.execute(
@@ -135,7 +120,6 @@ def login(body: LoginRequest):
 
 @app.get("/users")
 def list_users(admin=Depends(get_admin_user)):
-    """Lista todos os usuários. Apenas admin."""
     try:
         conn = get_connection()
         rows = conn.execute(

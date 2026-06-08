@@ -1,7 +1,4 @@
-"""
-auth.py — Módulo de autenticação JWT compartilhado.
-Copie para cada serviço que precisa verificar tokens.
-"""
+"""auth.py — Módulo de autenticação JWT compartilhado."""
 import os
 import jwt
 from datetime import datetime, timedelta, timezone

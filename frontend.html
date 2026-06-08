@@ -649,9 +649,21 @@ async function loadAdminEvents(){
         <div class="admin-ev-price">${fmt(ev.price)}</div>
         <div class="admin-ev-actions">
           <button class="btn-sm" onclick='openEdit(${JSON.stringify(ev)})'>✏ Editar</button>
+          <button class="btn-sm danger" onclick='confirmDelete(${ev.id}, ${JSON.stringify(ev.name)})'>🗑 Deletar</button>
         </div>
       </div>`).join('')+'</div>';
   }catch(e){ c.innerHTML=`<div class="empty-state" style="padding:20px">⚠ ${e.message}</div>`; }
+}
+
+// ── Admin — deletar evento ───────────────────────
+
+async function confirmDelete(id, name){
+  if(!confirm(`Deletar o evento "${name}"?\n\nEsta ação não pode ser desfeita.`)) return;
+  try{
+    await api(`/events/${id}`, {method:'DELETE'});
+    showFlash('admin-flash','✓ Evento deletado.','ok');
+    loadAdminEvents();
+  }catch(e){ showFlash('admin-flash', e.message); }
 }
 
 // ── Admin — editar evento ─────────────────────────

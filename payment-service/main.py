@@ -1,10 +1,4 @@
-"""
-Serviço de Pagamento (Mock) — porta 8004
-  POST /process → processa pagamento
-  GET  /health  → health check
-
-Para rodar: python main.py
-"""
+"""Serviço de Pagamento (Mock) — porta 8004."""
 import time
 import random
 import logging

@@ -1,17 +1,4 @@
-"""
-Serviço de Compras
-  Instância 1: porta 8003
-  Instância 2: porta 8013
-
-  POST /purchases        → comprar ingresso (usuário autenticado)
-  GET  /purchases        → listar (?user_id=N)
-  GET  /purchases/{id}   → detalhar
-  GET  /health           → health check
-
-Para rodar:
-  python main.py
-  python main.py --port 8013
-"""
+"""Serviço de Compras — portas 8003 / 8013."""
 import sys
 import uuid
 import time
@@ -24,7 +11,6 @@ from fastapi import FastAPI, HTTPException, Request, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
-# CORREÇÃO: usa SQLite via db.py local
 from db import get_connection, init_db
 
 PORT = 8003
@@ -83,7 +69,6 @@ async def log_requests(request: Request, call_next):
 
 
 def chamar_async(url: str, data: dict, nome: str, request_id: str):
-    """Chama outro serviço em background com retry exponencial."""
     def _run():
         headers = {"Content-Type": "application/json", "X-Request-ID": request_id}
         for tentativa in range(1, 4):
@@ -109,7 +94,6 @@ def create_purchase(
     x_user_id:    Optional[str] = Header(default=None),
     x_request_id: Optional[str] = Header(default=None),
 ):
-    """Compra um ingresso. Exige usuário autenticado via gateway."""
     user_id    = require_auth(x_user_id)
     request_id = x_request_id or str(uuid.uuid4())
 
@@ -125,7 +109,6 @@ def create_purchase(
     try:
         conn = get_connection()
 
-        # Idempotência
         existing = conn.execute(
             "SELECT * FROM purchases WHERE transaction_id=?", (transaction_id,)
         ).fetchone()
@@ -138,7 +121,6 @@ def create_purchase(
                 "status":         existing["status"],
             }
 
-        # Controle de concorrência — BEGIN EXCLUSIVE garante atomicidade
         conn.execute("BEGIN EXCLUSIVE")
 
         event = conn.execute("SELECT * FROM events WHERE id=?", (body.event_id,)).fetchone()

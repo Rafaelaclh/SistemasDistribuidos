@@ -1,10 +1,4 @@
-"""
-Serviço de Notificação (Mock) — porta 8005
-  POST /notify → simula e-mail
-  GET  /health → health check
-
-Para rodar: python main.py
-"""
+"""Serviço de Notificação (Mock) — porta 8005."""
 import time
 import logging
 import uvicorn

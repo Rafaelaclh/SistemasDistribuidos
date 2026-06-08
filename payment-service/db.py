@@ -1,12 +1,8 @@
-"""
-db.py — Banco de dados SQLite compartilhado.
-Copie este arquivo para dentro de cada pasta de serviço.
-"""
+"""db.py — Banco de dados SQLite compartilhado."""
 import sqlite3
 import os
 import bcrypt
 
-# BANCO COMPARTILHADO: todos os serviços usam o mesmo banco.db na raiz do projeto
 DB_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "banco.db")
 
 
@@ -19,7 +15,6 @@ def get_connection():
 
 
 def init_db():
-    """Cria tabelas e dados iniciais automaticamente."""
     conn = get_connection()
 
     conn.execute("""
@@ -77,7 +72,6 @@ def init_db():
 
     conn.commit()
 
-    # Admin padrão
     exists = conn.execute("SELECT id FROM users WHERE email='admin@tickets.com'").fetchone()
     if not exists:
         try:
@@ -92,7 +86,6 @@ def init_db():
             conn.rollback()
             print("[DB] Admin já existe (race condition ignorada).")
 
-    # Eventos de exemplo
     count = conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
     if count == 0:
         admin = conn.execute("SELECT id FROM users WHERE email='admin@tickets.com'").fetchone()

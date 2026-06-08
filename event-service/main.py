@@ -1,18 +1,4 @@
-"""
-Serviço de Eventos
-  Instância 1: porta 8002
-  Instância 2: porta 8012
-
-  GET  /events        → listar eventos (público)
-  GET  /events/{id}   → detalhar evento (público)
-  POST /events        → criar evento (admin)
-  PUT  /events/{id}   → editar evento (admin)
-  GET  /health        → health check
-
-Para rodar:
-  python main.py
-  python main.py --port 8012
-"""
+"""Serviço de Eventos — portas 8002 / 8012."""
 import sys
 import time
 import logging
@@ -22,7 +8,6 @@ from fastapi import FastAPI, HTTPException, Request, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
-# CORREÇÃO: usa SQLite via db.py local — removido mysql.connector
 from db import get_connection, init_db
 
 PORT = 8002
@@ -41,7 +26,6 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 
 
 def require_admin(x_user_role: Optional[str] = Header(default=None)):
-    """Verifica header X-User-Role repassado pelo gateway."""
     if x_user_role != "admin":
         raise HTTPException(403, "Acesso negado. Apenas administradores.")
     return x_user_role
@@ -71,7 +55,6 @@ async def log_requests(request: Request, call_next):
         f"{request.method} {request.url.path} → {response.status_code} "
         f"({ms}ms) | request_id={request_id} | user={user_id}"
     )
-    # CORREÇÃO: usa ? (SQLite) em vez de %s (MySQL)
     try:
         conn = get_connection()
         conn.execute(
@@ -92,10 +75,8 @@ def health():
 
 @app.get("/events")
 def list_events():
-    """Lista todos os eventos. Rota pública."""
     try:
         conn = get_connection()
-        # CORREÇÃO: usa fetchall() com row_factory=sqlite3.Row — sem cursor(dictionary=True)
         rows = conn.execute("""
             SELECT e.id, e.name, e.event_date, e.price, e.available_tickets,
                    e.created_at, u.name AS created_by_name
@@ -111,7 +92,6 @@ def list_events():
 
 @app.get("/events/{event_id}")
 def get_event(event_id: int):
-    """Detalha um evento. Rota pública."""
     try:
         conn = get_connection()
         row = conn.execute("""
@@ -136,7 +116,6 @@ def create_event(
     x_user_id:   Optional[str] = Header(default=None),
     x_user_role: Optional[str] = Header(default=None),
 ):
-    """Cria um novo evento. Exige role=admin."""
     require_admin(x_user_role)
 
     if body.price <= 0:
@@ -144,7 +123,6 @@ def create_event(
     if body.available_tickets <= 0:
         raise HTTPException(400, "Quantidade deve ser maior que zero")
 
-    # CORREÇÃO: se não houver X-User-ID, garante que existe admin padrão (id=1)
     created_by = int(x_user_id) if x_user_id else 1
 
     try:
@@ -163,13 +141,46 @@ def create_event(
         raise HTTPException(500, "Erro interno")
 
 
+@app.delete("/events/{event_id}", status_code=200)
+def delete_event(
+    event_id: int,
+    x_user_role: Optional[str] = Header(default=None),
+):
+    require_admin(x_user_role)
+
+    try:
+        conn = get_connection()
+        row = conn.execute("SELECT id FROM events WHERE id=?", (event_id,)).fetchone()
+        if not row:
+            conn.close()
+            raise HTTPException(404, "Evento não encontrado")
+
+        pending = conn.execute(
+            "SELECT COUNT(*) FROM purchases WHERE event_id=? AND status='pending'",
+            (event_id,)
+        ).fetchone()[0]
+        if pending > 0:
+            conn.close()
+            raise HTTPException(409, f"Evento possui {pending} compra(s) pendente(s). Aguarde a conclusão dos pagamentos antes de deletar.")
+
+        conn.execute("DELETE FROM events WHERE id=?", (event_id,))
+        conn.commit()
+        conn.close()
+        logger.info(f"Evento deletado: id={event_id}")
+        return {"message": "Evento deletado com sucesso"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Erro: {e}")
+        raise HTTPException(500, "Erro interno")
+
+
 @app.put("/events/{event_id}")
 def update_event(
     event_id: int,
     body: UpdateEventRequest,
     x_user_role: Optional[str] = Header(default=None),
 ):
-    """Atualiza nome, data, preço e/ou quantidade. Exige role=admin."""
     require_admin(x_user_role)
 
     campos = {}
@@ -203,6 +214,5 @@ def update_event(
 
 
 if __name__ == "__main__":
-    # CORREÇÃO: init_db() adicionado — cria banco.db e eventos de exemplo na primeira execução
     init_db()
     uvicorn.run("main:app", host="0.0.0.0", port=PORT, reload=False)

@@ -1,20 +1,7 @@
-"""
-API Gateway + Load Balancer — porta 8000
-
-Ponto único de entrada. Todas as requisições do frontend passam por aqui.
-  - Roteia /users/*     → user-service  (8001 ou 8011)
-  - Roteia /events/*    → event-service (8002 ou 8012)
-  - Roteia /purchases/* → purchase-service (8003 ou 8013)
-  - Load Balancer round-robin
-  - Validação de JWT e repasse de X-User-* para serviços internos
-  - Tracing distribuído via X-Request-ID
-
-Para rodar: python main.py
-"""
+"""API Gateway + Load Balancer — porta 8000."""
 import time
 import uuid
 import logging
-import itertools
 import httpx
 import uvicorn
 import os
@@ -41,7 +28,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ── Instâncias (Load Balancer round-robin) ────────────────────
 SERVICE_INSTANCES = {
     "users":     ["http://localhost:8001", "http://localhost:8011"],
     "events":    ["http://localhost:8002", "http://localhost:8012"],
@@ -57,9 +43,6 @@ def get_next_instance(service: str) -> str:
     return instances[idx]
 
 
-# ── Regras de autorização ─────────────────────────────────────
-# (method, prefixo, role_exigida)
-# role_exigida = None → rota pública
 ROUTE_RULES = [
     ("POST",   "/events",    "admin"),
     ("PUT",    "/events",    "admin"),
@@ -90,14 +73,7 @@ def extrair_usuario_do_token(authorization: str | None) -> dict | None:
 
 
 async def proxy(request: Request, service: str, path: str):
-    """Encaminha a requisição para o serviço correto."""
     request_id = request.headers.get("x-request-id") or str(uuid.uuid4())
-
-    # Monta o path completo para checar as regras
-    route_path = f"/{service}/{path}" if path else f"/{service}"
-
-    # ── Autorização ───────────────────────────────────────────
-    # Para user-service, rotas /register, /login, /health são públicas
     sub_path = f"/{path}" if path else "/"
     is_public_user = service == "users" and any(
         sub_path == r or sub_path.startswith(r + "/") for r in PUBLIC_USER_ROUTES
@@ -114,27 +90,15 @@ async def proxy(request: Request, service: str, path: str):
         if required_role == "admin" and user_payload.get("role") != "admin":
             raise HTTPException(403, "Acesso negado. Apenas administradores.")
 
-    # ── Proxy com retry round-robin ───────────────────────────
-    # Regra de roteamento:
-    # - user-service: rotas internas NAO tem prefixo /users/
-    #     /users/login  -> http://localhost:8001/login
-    #     /users/register -> http://localhost:8001/register
-    #     /users        -> http://localhost:8001/users  (listar, admin)
-    # - event-service e purchase-service: rotas internas TEM o prefixo
-    #     /events       -> http://localhost:8002/events
-    #     /events/5     -> http://localhost:8002/events/5
-    #     /purchases    -> http://localhost:8003/purchases
     target = get_next_instance(service)
 
     def build_url(t: str) -> str:
         if service == "users":
-            # user-service nao tem prefixo: /users/login -> /login
             if path:
                 return f"{t}/{path}"
             else:
-                return f"{t}/users"   # GET /users (listagem admin)
+                return f"{t}/users"
         else:
-            # event-service e purchase-service tem prefixo proprio
             if path:
                 return f"{t}/{service}/{path}"
             else:
@@ -152,7 +116,6 @@ async def proxy(request: Request, service: str, path: str):
 
     body = await request.body()
 
-    # Headers repassados ao serviço interno
     internal_headers = {
         "Content-Type":  "application/json",
         "X-Request-ID":  request_id,
@@ -193,7 +156,6 @@ async def proxy(request: Request, service: str, path: str):
     raise HTTPException(503, f"Serviço '{service}' indisponível após 3 tentativas.")
 
 
-# ── Health / Status ───────────────────────────────────────────
 
 @app.get("/health")
 async def health():
@@ -223,7 +185,6 @@ async def status():
     return resultado
 
 
-# ── Rotas ─────────────────────────────────────────────────────
 
 @app.api_route("/users/{path:path}", methods=["GET", "POST", "PUT", "DELETE"])
 async def route_users(request: Request, path: str):
