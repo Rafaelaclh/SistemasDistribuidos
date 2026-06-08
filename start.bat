@@ -3,12 +3,6 @@ echo Iniciando TicketFlow...
 
 cd /d %~dp0
 
-REM Remove bancos antigos individuais (agora todos usam banco.db na raiz)
-del /f /q user-service\banco.db 2>nul
-del /f /q event-service\banco.db 2>nul
-del /f /q purchase-service\banco.db 2>nul
-del /f /q payment-service\banco.db 2>nul
-
 start "gateway"              cmd /k "cd gateway && python main.py"
 timeout /t 2 /nobreak >nul
 

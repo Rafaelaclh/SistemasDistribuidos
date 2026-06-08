@@ -2,12 +2,6 @@
 DIR="$(cd "$(dirname "$0")" && pwd)"
 echo "Iniciando TicketFlow em $DIR"
 
-# Remove bancos antigos individuais
-rm -f "$DIR/user-service/banco.db"
-rm -f "$DIR/event-service/banco.db"
-rm -f "$DIR/purchase-service/banco.db"
-rm -f "$DIR/payment-service/banco.db"
-
 cd "$DIR/gateway"              && python main.py &
 sleep 2
 
