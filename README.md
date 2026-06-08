@@ -1,13 +1,17 @@
-# TicketFlow — Sistema Distribuído de Venda de Ingressos
+# TicketFlow — Venda de Ingressos Distribuída
 
-## Arquitetura
+Trabalho da disciplina de Sistemas Distribuídos — UNISUL 2026.
+
+O projeto simula uma plataforma de venda de ingressos usando arquitetura de microsserviços. A ideia foi dividir as responsabilidades em serviços separados (usuários, eventos, compras, pagamento e notificação), com um gateway na frente centralizando as requisições e fazendo o balanceamento de carga entre as instâncias.
+
+## Como o sistema funciona
 
 ```
-Cliente (Postman / curl / frontend.html)
+Cliente (frontend.html ou curl)
          │
          ▼
   ┌─────────────┐
-  │ API Gateway │  :8000  ← valida JWT, round-robin LB, propaga X-Request-ID
+  │ API Gateway │  :8000
   └──────┬──────┘
          │
    ┌─────┴──────────────────┐
@@ -21,38 +25,18 @@ user-service           event-service          purchase-service
                                         :8004              :8005
 ```
 
+O gateway recebe tudo na porta 8000 e redireciona para o serviço correto. Cada serviço principal sobe em duas portas para simular múltiplas instâncias — o gateway alterna entre elas em round-robin e, se uma cair, tenta a outra.
+
 ## Serviços
 
-| Serviço              | Porta(s)       | Responsabilidade                          |
-|----------------------|----------------|-------------------------------------------|
-| API Gateway          | 8000           | Roteamento, LB, JWT, tracing              |
-| user-service         | 8001 / 8011    | Cadastro, login (retorna JWT)             |
-| event-service        | 8002 / 8012    | CRUD de eventos                           |
-| purchase-service     | 8003 / 8013    | Compra de ingressos, controle de estoque  |
-| payment-service      | 8004           | Mock de gateway de pagamento              |
-| notification-service | 8005           | Mock de envio de e-mail                   |
-
-## Requisitos atendidos
-
-| Requisito                          | Implementação                                                      |
-|------------------------------------|--------------------------------------------------------------------|
-| API Gateway                        | `gateway/main.py` — ponto único de entrada na porta 8000          |
-| Load Balancer                      | Round-robin entre 2 instâncias por serviço; failover automático   |
-| Múltiplos microsserviços           | 5 serviços independentes                                          |
-| Múltiplas instâncias               | user, event e purchase sobem em 2 portas cada                     |
-| Banco de dados                     | SQLite com WAL mode em cada serviço                               |
-| Comunicação assíncrona             | Threads em background com retry exponencial (payment/notification)|
-| Logs estruturados                  | Formato padronizado com timestamp, serviço e request_id           |
-| Métricas (latência/status)         | Tabela `metrics` gravada por middleware HTTP em cada serviço      |
-| Tracing distribuído                | `X-Request-ID` gerado no gateway e propagado a todos os serviços  |
-| Controle de concorrência           | `BEGIN EXCLUSIVE` no SQLite — impede overselling                  |
-| Resiliência a falhas               | Retry com backoff 2^n no async; gateway tenta 3x com failover     |
-| Idempotência                       | `transaction_id` único — duplicata retorna resposta original      |
-| Autenticação (JWT)                 | Login retorna Bearer token; gateway valida antes de rotear        |
-| Autorização por perfil             | Rotas de escrita de eventos exigem `role=admin`                   |
-| Compra exige login                 | POST /purchases exige token válido                                |
-| Gateway de pagamento mockado       | payment-service com taxa de aprovação por método                  |
-| E-mail simulado                    | notification-service imprime nos logs                             |
+| Serviço              | Porta(s)    | O que faz                                   |
+| -------------------- | ----------- | ------------------------------------------- |
+| API Gateway          | 8000        | Recebe tudo, valida o JWT, faz o roteamento |
+| user-service         | 8001 / 8011 | Cadastro e login (retorna o token JWT)      |
+| event-service        | 8002 / 8012 | Criar, editar, deletar e listar eventos     |
+| purchase-service     | 8003 / 8013 | Compra de ingressos e controle de estoque   |
+| payment-service      | 8004        | Simula aprovação/rejeição do pagamento      |
+| notification-service | 8005        | Simula envio de e-mail de confirmação       |
 
 ## Instalação
 
@@ -60,60 +44,40 @@ user-service           event-service          purchase-service
 pip install -r requirements.txt
 ```
 
-## Iniciando todos os serviços
+## Rodando o projeto
 
-**Windows** — use o `start.bat` existente.
+**Windows:** execute o `start.bat` (Windows) ou `start.sh` (Mac e Linux).
 
-**Linux/macOS:**
-```bash
-# Terminal 1 — Gateway
-cd gateway && python main.py &
+Depois é só abrir o `frontend.html` no navegador ou usar os exemplos abaixo.
 
-# Terminal 2/3 — User Service (2 instâncias)
-cd user-service && python main.py &
-cd user-service && python main.py --port 8011 &
+## Exemplos de uso
 
-# Terminal 4/5 — Event Service (2 instâncias)
-cd event-service && python main.py &
-cd event-service && python main.py --port 8012 &
+### Verificar se os serviços estão online
 
-# Terminal 6/7 — Purchase Service (2 instâncias)
-cd purchase-service && python main.py &
-cd purchase-service && python main.py --port 8013 &
-
-# Terminal 8 — Payment Service
-cd payment-service && python main.py &
-
-# Terminal 9 — Notification Service
-cd notification-service && python main.py &
-```
-
-## Exemplos de uso (curl)
-
-### 1. Verificar saúde do sistema
 ```bash
 curl http://localhost:8000/status
 ```
 
-### 2. Cadastrar usuário
+### Cadastrar usuário
+
 ```bash
 curl -X POST http://localhost:8000/users/register \
   -H "Content-Type: application/json" \
   -d '{"name": "João Silva", "email": "joao@email.com", "password": "123456"}'
 ```
 
-### 3. Login — obtém o token JWT
+### Login (guarde o token retornado)
+
 ```bash
 curl -X POST http://localhost:8000/users/login \
   -H "Content-Type: application/json" \
   -d '{"email": "joao@email.com", "password": "123456"}'
 
-# Resposta: { "token": "eyJ...", "role": "user", ... }
-# Guarde o token para os próximos passos.
 TOKEN="eyJ..."
 ```
 
-### 4. Login como admin (conta criada automaticamente)
+### Login como admin
+
 ```bash
 curl -X POST http://localhost:8000/users/login \
   -H "Content-Type: application/json" \
@@ -122,12 +86,14 @@ curl -X POST http://localhost:8000/users/login \
 ADMIN_TOKEN="eyJ..."
 ```
 
-### 5. Listar eventos (público — sem token)
+### Listar eventos (não precisa de token)
+
 ```bash
 curl http://localhost:8000/events
 ```
 
-### 6. Criar evento (exige admin)
+### Criar evento (só admin)
+
 ```bash
 curl -X POST http://localhost:8000/events \
   -H "Content-Type: application/json" \
@@ -135,7 +101,8 @@ curl -X POST http://localhost:8000/events \
   -d '{"name": "Rock in Rio 2027", "event_date": "2027-01-15 20:00:00", "price": 500.00, "available_tickets": 50}'
 ```
 
-### 7. Alterar preço e quantidade (exige admin)
+### Editar evento (só admin)
+
 ```bash
 curl -X PUT http://localhost:8000/events/1 \
   -H "Content-Type: application/json" \
@@ -143,7 +110,15 @@ curl -X PUT http://localhost:8000/events/1 \
   -d '{"price": 450.00, "available_tickets": 80}'
 ```
 
-### 8. Comprar ingresso (exige login)
+### Deletar evento (só admin)
+
+```bash
+curl -X DELETE http://localhost:8000/events/1 \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+```
+
+### Comprar ingresso
+
 ```bash
 curl -X POST http://localhost:8000/purchases \
   -H "Content-Type: application/json" \
@@ -151,46 +126,47 @@ curl -X POST http://localhost:8000/purchases \
   -d '{"event_id": 1, "quantity": 2, "payment_method": "pix"}'
 ```
 
-### 9. Ver minhas compras
+### Ver minhas compras
+
 ```bash
 curl http://localhost:8000/purchases \
   -H "Authorization: Bearer $TOKEN"
 ```
 
-### 10. Testar idempotência (enviar a mesma transaction_id duas vezes)
+### Testar idempotência
+
+Manda a mesma `transaction_id` duas vezes — a segunda retorna a compra original sem duplicar.
+
 ```bash
-TX="meu-id-unico-123"
+TX="teste-123"
 
 curl -X POST http://localhost:8000/purchases \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $TOKEN" \
   -d "{\"event_id\": 1, \"quantity\": 1, \"payment_method\": \"pix\", \"transaction_id\": \"$TX\"}"
 
-# Segunda chamada — retorna a compra já existente sem duplicar
 curl -X POST http://localhost:8000/purchases \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $TOKEN" \
   -d "{\"event_id\": 1, \"quantity\": 1, \"payment_method\": \"pix\", \"transaction_id\": \"$TX\"}"
 ```
 
-## Tracing distribuído
+### Rastrear uma requisição pelos logs
 
-Todo request recebe um `X-Request-ID`. Você pode rastreá-lo nos logs de todos os serviços:
+Todo request tem um `X-Request-ID` que aparece nos logs de todos os serviços por onde ele passa.
 
 ```bash
-# Envie um request com ID customizado
 curl -X POST http://localhost:8000/purchases \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $TOKEN" \
-  -H "X-Request-ID: meu-trace-abc123" \
+  -H "X-Request-ID: teste-rastreio-1" \
   -d '{"event_id": 1, "quantity": 1, "payment_method": "credit_card"}'
-
-# Nos logs de gateway, purchase-service, payment-service e notification-service
-# aparecerá: request_id=meu-trace-abc123
 ```
+
+Nos logs do gateway, purchase-service, payment-service e notification-service vai aparecer `request_id=teste-rastreio-1`.
 
 ## Credenciais padrão
 
-| Conta                 | E-mail                 | Senha    | Role  |
-|-----------------------|------------------------|----------|-------|
-| Administrador padrão  | admin@tickets.com      | admin123 | admin |
+| E-mail            | Senha    | Perfil |
+| ----------------- | -------- | ------ |
+| admin@tickets.com | admin123 | admin  |
