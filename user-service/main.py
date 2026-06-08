@@ -67,7 +67,8 @@ async def log_requests(request: Request, call_next):
             "INSERT INTO metrics (service, endpoint, method, status_code, latency_ms) VALUES (?,?,?,?,?)",
             (f"user-service:{PORT}", str(request.url.path), request.method, response.status_code, ms)
         )
-        conn.commit(); conn.close()
+        conn.commit()
+        conn.close()
     except Exception:
         pass
     return response
@@ -80,7 +81,7 @@ def health():
 
 @app.post("/register", status_code=201)
 def register(body: RegisterRequest):
-    """Cadastra um novo usuário. Role padrão: 'user'. Apenas 'admin' ou 'user' são aceitos."""
+    """Cadastra um novo usuário."""
     if body.role not in ("user", "admin"):
         raise HTTPException(400, "Role deve ser 'user' ou 'admin'")
     hashed = bcrypt.hashpw(body.password.encode(), bcrypt.gensalt()).decode()
@@ -104,45 +105,44 @@ def register(body: RegisterRequest):
 
 @app.post("/login")
 def login(body: LoginRequest):
-    """
-    Autentica o usuário e retorna um JWT.
-    O token deve ser enviado nas próximas requisições como:
-      Authorization: Bearer <token>
-    """
+    """Login — retorna JWT."""
     try:
         conn = get_connection()
-        row  = conn.execute("SELECT * FROM users WHERE email=?", (body.email,)).fetchone()
+        row = conn.execute(
+            "SELECT id, name, email, password, role FROM users WHERE email=?",
+            (body.email,)
+        ).fetchone()
         conn.close()
     except Exception as e:
         logger.error(f"Erro: {e}")
         raise HTTPException(500, "Erro interno")
 
-    if not row or not bcrypt.checkpw(body.password.encode(), row["password"].encode()):
-        raise HTTPException(401, "E-mail ou senha incorretos")
+    if not row:
+        raise HTTPException(401, "Credenciais inválidas")
+
+    if not bcrypt.checkpw(body.password.encode(), row["password"].encode()):
+        raise HTTPException(401, "Credenciais inválidas")
 
     token = criar_token(row["id"], row["name"], row["role"])
-
-    logger.info(f"Login: user_id={row['id']} role={row['role']}")
+    logger.info(f"Login: id={row['id']} email={row['email']}")
     return {
-        "message":  "Login realizado com sucesso",
-        "user_id":  row["id"],
-        "name":     row["name"],
-        "role":     row["role"],
-        "token":    token,
-        "token_type": "Bearer",
+        "token":   token,
+        "user_id": row["id"],
+        "name":    row["name"],
+        "role":    row["role"],
     }
 
 
 @app.get("/users")
 def list_users(admin=Depends(get_admin_user)):
-    """Lista todos os usuários. Exige role=admin."""
+    """Lista todos os usuários. Apenas admin."""
     try:
         conn = get_connection()
         rows = conn.execute(
             "SELECT id, name, email, role, created_at FROM users ORDER BY id"
         ).fetchall()
         conn.close()
-        return {"users": [dict(r) for r in rows], "total": len(rows)}
+        return {"users": [dict(r) for r in rows]}
     except Exception as e:
         logger.error(f"Erro: {e}")
         raise HTTPException(500, "Erro interno")

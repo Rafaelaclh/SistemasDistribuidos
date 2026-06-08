@@ -1,20 +1,12 @@
 """
-Serviço de Compras ⭐ — O mais importante
+Serviço de Compras
   Instância 1: porta 8003
   Instância 2: porta 8013
 
   POST /purchases        → comprar ingresso (usuário autenticado)
-  GET  /purchases        → listar (?user_id=N) (usuário autenticado)
-  GET  /purchases/{id}   → detalhar (usuário autenticado)
+  GET  /purchases        → listar (?user_id=N)
+  GET  /purchases/{id}   → detalhar
   GET  /health           → health check
-
-Implementa:
-  ✅ Controle de concorrência — BEGIN EXCLUSIVE (evita overselling)
-  ✅ Idempotência            — transaction_id único
-  ✅ Resiliência             — retry com backoff exponencial
-  ✅ Comunicação assíncrona  — thread separada para pagamento/notificação
-  ✅ Autorização             — headers X-User-* repassados pelo gateway
-  ✅ Tracing                 — X-Request-ID propagado ao payment e notification
 
 Para rodar:
   python main.py
@@ -32,6 +24,7 @@ from fastapi import FastAPI, HTTPException, Request, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
+# CORREÇÃO: usa SQLite via db.py local
 from db import get_connection, init_db
 
 PORT = 8003
@@ -60,7 +53,6 @@ class PurchaseRequest(BaseModel):
 
 
 def require_auth(x_user_id: Optional[str]) -> int:
-    """Garante que o header X-User-ID está presente (repassado pelo gateway após validar o JWT)."""
     if not x_user_id:
         raise HTTPException(401, "Autenticação necessária.")
     return int(x_user_id)
@@ -83,29 +75,24 @@ async def log_requests(request: Request, call_next):
             "INSERT INTO metrics (service, endpoint, method, status_code, latency_ms) VALUES (?,?,?,?,?)",
             (f"purchase-service:{PORT}", str(request.url.path), request.method, response.status_code, ms)
         )
-        conn.commit(); conn.close()
+        conn.commit()
+        conn.close()
     except Exception:
         pass
     return response
 
 
 def chamar_async(url: str, data: dict, nome: str, request_id: str):
-    """
-    Chama outro serviço em background com retry exponencial.
-    Propaga o X-Request-ID para manter o trace entre serviços.
-    """
+    """Chama outro serviço em background com retry exponencial."""
     def _run():
-        headers = {
-            "Content-Type": "application/json",
-            "X-Request-ID": request_id,
-        }
+        headers = {"Content-Type": "application/json", "X-Request-ID": request_id}
         for tentativa in range(1, 4):
             try:
                 requests.post(url, json=data, headers=headers, timeout=5)
-                logger.info(f"[{nome}] Chamado com sucesso | request_id={request_id}")
+                logger.info(f"[{nome}] OK | request_id={request_id}")
                 return
             except Exception as e:
-                logger.warning(f"[{nome}] Tentativa {tentativa}/3 falhou: {e} | request_id={request_id}")
+                logger.warning(f"[{nome}] Tentativa {tentativa}/3 falhou: {e}")
                 time.sleep(2 ** tentativa)
         logger.error(f"[{nome}] Falha após 3 tentativas | request_id={request_id}")
     threading.Thread(target=_run, daemon=True).start()
@@ -122,7 +109,7 @@ def create_purchase(
     x_user_id:    Optional[str] = Header(default=None),
     x_request_id: Optional[str] = Header(default=None),
 ):
-    """Compra um ingresso. Exige usuário autenticado."""
+    """Compra um ingresso. Exige usuário autenticado via gateway."""
     user_id    = require_auth(x_user_id)
     request_id = x_request_id or str(uuid.uuid4())
 
@@ -132,21 +119,17 @@ def create_purchase(
         raise HTTPException(400, "Quantidade deve ser pelo menos 1")
 
     transaction_id = body.transaction_id or str(uuid.uuid4())
-    logger.info(
-        f"Compra | tx={transaction_id} user={user_id} event={body.event_id} "
-        f"qty={body.quantity} | request_id={request_id}"
-    )
+    logger.info(f"Compra | tx={transaction_id} user={user_id} event={body.event_id} qty={body.quantity}")
 
     conn = None
     try:
         conn = get_connection()
 
-        # ── IDEMPOTÊNCIA ──────────────────────────────────────
+        # Idempotência
         existing = conn.execute(
             "SELECT * FROM purchases WHERE transaction_id=?", (transaction_id,)
         ).fetchone()
         if existing:
-            logger.warning(f"Duplicada detectada | tx={transaction_id} | request_id={request_id}")
             conn.close()
             return {
                 "message":        "Compra já processada (requisição duplicada)",
@@ -155,32 +138,26 @@ def create_purchase(
                 "status":         existing["status"],
             }
 
-        # ── CONTROLE DE CONCORRÊNCIA ──────────────────────────
-        # BEGIN EXCLUSIVE: só UMA transação por vez pode escrever.
-        # Garante que dois usuários não comprem o mesmo ingresso (overselling).
+        # Controle de concorrência — BEGIN EXCLUSIVE garante atomicidade
         conn.execute("BEGIN EXCLUSIVE")
 
         event = conn.execute("SELECT * FROM events WHERE id=?", (body.event_id,)).fetchone()
 
         if not event:
-            conn.rollback(); conn.close()
+            conn.rollback()
+            conn.close()
             raise HTTPException(404, "Evento não encontrado")
 
         if event["available_tickets"] < body.quantity:
-            conn.rollback(); conn.close()
-            logger.warning(
-                f"Estoque insuficiente | disponível={event['available_tickets']} "
-                f"pedido={body.quantity} | request_id={request_id}"
-            )
+            conn.rollback()
+            conn.close()
             raise HTTPException(409, f"Ingressos insuficientes. Disponível: {event['available_tickets']}")
 
-        # ── ATUALIZA ESTOQUE ──────────────────────────────────
         conn.execute(
             "UPDATE events SET available_tickets = available_tickets - ? WHERE id=?",
             (body.quantity, body.event_id)
         )
 
-        # ── REGISTRA COMPRA ───────────────────────────────────
         total = event["price"] * body.quantity
         conn.execute(
             """INSERT INTO purchases
@@ -189,14 +166,10 @@ def create_purchase(
             (transaction_id, user_id, body.event_id, body.quantity, total, body.payment_method)
         )
         purchase_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        conn.commit()
+        conn.close()
+        logger.info(f"Compra registrada | id={purchase_id} total=R${total:.2f}")
 
-        conn.commit(); conn.close()
-        logger.info(
-            f"Compra registrada | id={purchase_id} total=R${total:.2f} "
-            f"| request_id={request_id}"
-        )
-
-        # ── DISPARA PAGAMENTO E NOTIFICAÇÃO (assíncrono) ──────
         payload = {
             "purchase_id":    purchase_id,
             "transaction_id": transaction_id,
@@ -229,24 +202,17 @@ def create_purchase(
         if conn:
             try: conn.rollback()
             except: pass
-        logger.error(f"Erro inesperado: {e} | request_id={request_id}")
+        logger.error(f"Erro inesperado: {e}")
         raise HTTPException(500, "Erro interno")
 
 
 @app.get("/purchases")
 def list_purchases(
-    user_id:      Optional[int] = None,
-    x_user_id:    Optional[str] = Header(default=None),
-    x_user_role:  Optional[str] = Header(default=None),
+    user_id:     Optional[int] = None,
+    x_user_id:   Optional[str] = Header(default=None),
+    x_user_role: Optional[str] = Header(default=None),
 ):
-    """
-    Lista compras.
-    - Admin vê todas (ou filtra por ?user_id=N).
-    - Usuário comum vê apenas as próprias.
-    """
     auth_user_id = require_auth(x_user_id)
-
-    # Usuário comum só pode ver as próprias compras
     if x_user_role != "admin":
         user_id = auth_user_id
 
@@ -277,15 +243,11 @@ def get_purchase(
     x_user_id:   Optional[str] = Header(default=None),
     x_user_role: Optional[str] = Header(default=None),
 ):
-    """
-    Detalha uma compra.
-    Usuário comum só pode ver as próprias compras; admin vê qualquer uma.
-    """
     auth_user_id = require_auth(x_user_id)
 
     try:
         conn = get_connection()
-        row  = conn.execute("""
+        row = conn.execute("""
             SELECT p.*, e.name AS event_name
             FROM purchases p JOIN events e ON p.event_id=e.id
             WHERE p.id=?
@@ -298,7 +260,6 @@ def get_purchase(
     if not row:
         raise HTTPException(404, "Compra não encontrada")
 
-    # Usuário comum não pode ver compra de outro usuário
     if x_user_role != "admin" and row["user_id"] != auth_user_id:
         raise HTTPException(403, "Acesso negado.")
 

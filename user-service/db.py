@@ -1,14 +1,13 @@
 """
-db.py — Banco de dados SQLite.
-Não precisa instalar nada. O arquivo banco.db é criado
-automaticamente quando o serviço inicia pela primeira vez.
+db.py — Banco de dados SQLite compartilhado.
+Copie este arquivo para dentro de cada pasta de serviço.
 """
 import sqlite3
 import os
 import bcrypt
 
-# Cada serviço terá seu banco.db na própria pasta
-DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "banco.db")
+# BANCO COMPARTILHADO: todos os serviços usam o mesmo banco.db na raiz do projeto
+DB_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "banco.db")
 
 
 def get_connection():
@@ -81,13 +80,17 @@ def init_db():
     # Admin padrão
     exists = conn.execute("SELECT id FROM users WHERE email='admin@tickets.com'").fetchone()
     if not exists:
-        hashed = bcrypt.hashpw(b"admin123", bcrypt.gensalt()).decode()
-        conn.execute(
-            "INSERT INTO users (name, email, password, role) VALUES (?,?,?,?)",
-            ("Administrador", "admin@tickets.com", hashed, "admin")
-        )
-        conn.commit()
-        print("[DB] Admin criado: admin@tickets.com / admin123")
+        try:
+            hashed = bcrypt.hashpw(b"admin123", bcrypt.gensalt()).decode()
+            conn.execute(
+                "INSERT INTO users (name, email, password, role) VALUES (?,?,?,?)",
+                ("Administrador", "admin@tickets.com", hashed, "admin")
+            )
+            conn.commit()
+            print("[DB] Admin criado: admin@tickets.com / admin123")
+        except Exception:
+            conn.rollback()
+            print("[DB] Admin já existe (race condition ignorada).")
 
     # Eventos de exemplo
     count = conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]

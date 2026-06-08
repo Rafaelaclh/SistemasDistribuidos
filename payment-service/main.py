@@ -10,7 +10,7 @@ import random
 import logging
 import uvicorn
 
-from fastapi import FastAPI, HTTPException, Request, Header
+from fastapi import FastAPI, HTTPException, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
@@ -24,9 +24,14 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 
 
 class PaymentRequest(BaseModel):
-    purchase_id: int; transaction_id: str; user_id: int
-    event_id: int; event_name: str; quantity: int
-    total_price: float; payment_method: str
+    purchase_id:    int
+    transaction_id: str
+    user_id:        int
+    event_id:       int
+    event_name:     str
+    quantity:       int
+    total_price:    float
+    payment_method: str
 
 
 @app.get("/health")
@@ -64,10 +69,10 @@ def process_payment(
                 (body.quantity, body.event_id)
             )
             conn.commit()
-            logger.info(f"Ingressos devolvidos | event_id={body.event_id} | request_id={request_id}")
+            logger.info(f"Ingressos devolvidos | event_id={body.event_id}")
         conn.close()
     except Exception as e:
-        logger.error(f"Erro no banco: {e} | request_id={request_id}")
+        logger.error(f"Erro no banco: {e}")
         raise HTTPException(500, "Erro interno")
 
     logger.info(
@@ -75,10 +80,10 @@ def process_payment(
         f"purchase_id={body.purchase_id} | request_id={request_id}"
     )
     return {
-        "purchase_id":  body.purchase_id,
-        "status":       status,
-        "request_id":   request_id,
-        "message":      "Aprovado!" if aprovado else "Recusado pela operadora.",
+        "purchase_id": body.purchase_id,
+        "status":      status,
+        "request_id":  request_id,
+        "message":     "Aprovado!" if aprovado else "Recusado pela operadora.",
     }
 
 

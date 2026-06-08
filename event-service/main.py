@@ -6,12 +6,8 @@ Serviço de Eventos
   GET  /events        → listar eventos (público)
   GET  /events/{id}   → detalhar evento (público)
   POST /events        → criar evento (admin)
-  PUT  /events/{id}   → editar preço e/ou quantidade (admin)
+  PUT  /events/{id}   → editar evento (admin)
   GET  /health        → health check
-
-  Autorização via headers internos repassados pelo gateway:
-    X-User-ID, X-User-Role, X-User-Name
-  O gateway já validou o JWT — o serviço confia nesses headers.
 
 Para rodar:
   python main.py
@@ -26,6 +22,7 @@ from fastapi import FastAPI, HTTPException, Request, Header
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
+# CORREÇÃO: usa SQLite via db.py local — removido mysql.connector
 from db import get_connection, init_db
 
 PORT = 8002
@@ -44,12 +41,9 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 
 
 def require_admin(x_user_role: Optional[str] = Header(default=None)):
-    """
-    Verifica se o header X-User-Role (repassado pelo gateway) é 'admin'.
-    O gateway já validou o JWT — aqui apenas checamos a role.
-    """
+    """Verifica header X-User-Role repassado pelo gateway."""
     if x_user_role != "admin":
-        raise HTTPException(403, "Acesso negado. Apenas administradores podem executar esta ação.")
+        raise HTTPException(403, "Acesso negado. Apenas administradores.")
     return x_user_role
 
 
@@ -77,13 +71,15 @@ async def log_requests(request: Request, call_next):
         f"{request.method} {request.url.path} → {response.status_code} "
         f"({ms}ms) | request_id={request_id} | user={user_id}"
     )
+    # CORREÇÃO: usa ? (SQLite) em vez de %s (MySQL)
     try:
         conn = get_connection()
         conn.execute(
             "INSERT INTO metrics (service, endpoint, method, status_code, latency_ms) VALUES (?,?,?,?,?)",
             (f"event-service:{PORT}", str(request.url.path), request.method, response.status_code, ms)
         )
-        conn.commit(); conn.close()
+        conn.commit()
+        conn.close()
     except Exception:
         pass
     return response
@@ -99,6 +95,7 @@ def list_events():
     """Lista todos os eventos. Rota pública."""
     try:
         conn = get_connection()
+        # CORREÇÃO: usa fetchall() com row_factory=sqlite3.Row — sem cursor(dictionary=True)
         rows = conn.execute("""
             SELECT e.id, e.name, e.event_date, e.price, e.available_tickets,
                    e.created_at, u.name AS created_by_name
@@ -108,7 +105,7 @@ def list_events():
         conn.close()
         return {"events": [dict(r) for r in rows], "total": len(rows)}
     except Exception as e:
-        logger.error(f"Erro: {e}")
+        logger.error(f"Erro ao listar eventos: {e}")
         raise HTTPException(500, "Erro interno")
 
 
@@ -117,7 +114,7 @@ def get_event(event_id: int):
     """Detalha um evento. Rota pública."""
     try:
         conn = get_connection()
-        row  = conn.execute("""
+        row = conn.execute("""
             SELECT e.id, e.name, e.event_date, e.price, e.available_tickets,
                    e.created_at, u.name AS created_by_name
             FROM events e JOIN users u ON e.created_by = u.id
@@ -147,6 +144,7 @@ def create_event(
     if body.available_tickets <= 0:
         raise HTTPException(400, "Quantidade deve ser maior que zero")
 
+    # CORREÇÃO: se não houver X-User-ID, garante que existe admin padrão (id=1)
     created_by = int(x_user_id) if x_user_id else 1
 
     try:
@@ -158,7 +156,7 @@ def create_event(
         conn.commit()
         event_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
         conn.close()
-        logger.info(f"Evento criado: id={event_id} por admin user_id={created_by}")
+        logger.info(f"Evento criado: id={event_id} por user_id={created_by}")
         return {"message": "Evento criado", "event_id": event_id}
     except Exception as e:
         logger.error(f"Erro: {e}")
@@ -185,7 +183,7 @@ def update_event(
 
     try:
         conn = get_connection()
-        row  = conn.execute("SELECT id FROM events WHERE id=?", (event_id,)).fetchone()
+        row = conn.execute("SELECT id FROM events WHERE id=?", (event_id,)).fetchone()
         if not row:
             conn.close()
             raise HTTPException(404, "Evento não encontrado")
@@ -193,7 +191,8 @@ def update_event(
         set_clause = ", ".join(f"{k}=?" for k in campos)
         valores    = list(campos.values()) + [event_id]
         conn.execute(f"UPDATE events SET {set_clause} WHERE id=?", valores)
-        conn.commit(); conn.close()
+        conn.commit()
+        conn.close()
         logger.info(f"Evento atualizado: id={event_id} campos={list(campos.keys())}")
         return {"message": "Evento atualizado com sucesso"}
     except HTTPException:
@@ -204,5 +203,6 @@ def update_event(
 
 
 if __name__ == "__main__":
+    # CORREÇÃO: init_db() adicionado — cria banco.db e eventos de exemplo na primeira execução
     init_db()
     uvicorn.run("main:app", host="0.0.0.0", port=PORT, reload=False)

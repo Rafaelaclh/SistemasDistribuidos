@@ -1,18 +1,13 @@
 """
 API Gateway + Load Balancer — porta 8000
-================================================
-Ponto único de entrada do sistema. Todas as requisições
-do frontend passam por aqui.
 
-Funções:
-  - Roteia /users/*    → user-service  (8001 ou 8011)
-  - Roteia /events/*   → event-service (8002 ou 8012)
-  - Roteia /purchases/*→ purchase-service (8003 ou 8013)
-  - Load Balancer round-robin entre as instâncias de cada serviço
-  - Logs de todas as requisições (observabilidade)
-  - Health check de todos os serviços
-  - Tracing distribuído via X-Request-ID propagado a todos os serviços
+Ponto único de entrada. Todas as requisições do frontend passam por aqui.
+  - Roteia /users/*     → user-service  (8001 ou 8011)
+  - Roteia /events/*    → event-service (8002 ou 8012)
+  - Roteia /purchases/* → purchase-service (8003 ou 8013)
+  - Load Balancer round-robin
   - Validação de JWT e repasse de X-User-* para serviços internos
+  - Tracing distribuído via X-Request-ID
 
 Para rodar: python main.py
 """
@@ -39,7 +34,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="API Gateway")
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -47,7 +41,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ── Instâncias de cada serviço (Load Balancer) ────────────────
+# ── Instâncias (Load Balancer round-robin) ────────────────────
 SERVICE_INSTANCES = {
     "users":     ["http://localhost:8001", "http://localhost:8011"],
     "events":    ["http://localhost:8002", "http://localhost:8012"],
@@ -57,31 +51,28 @@ _counters = {k: 0 for k in SERVICE_INSTANCES}
 
 
 def get_next_instance(service: str) -> str:
-    """Round-robin: alterna entre as instâncias disponíveis."""
     instances = SERVICE_INSTANCES[service]
     idx = _counters[service] % len(instances)
     _counters[service] += 1
     return instances[idx]
 
 
-# ── Rotas que exigem autenticação e/ou role admin ─────────────
-# Formato: (method, prefixo_path, role_exigida)
-#   role_exigida = "admin" → apenas admins
-#   role_exigida = "user"  → qualquer usuário logado
-#   role_exigida = None    → rota pública
+# ── Regras de autorização ─────────────────────────────────────
+# (method, prefixo, role_exigida)
+# role_exigida = None → rota pública
 ROUTE_RULES = [
-    # Eventos — leitura é pública; escrita exige admin
-    ("POST",   "/events",  "admin"),
-    ("PUT",    "/events",  "admin"),
-    ("DELETE", "/events",  "admin"),
-    # Compras — exige usuário logado
+    ("POST",   "/events",    "admin"),
+    ("PUT",    "/events",    "admin"),
+    ("DELETE", "/events",    "admin"),
     ("POST",   "/purchases", "user"),
     ("GET",    "/purchases", "user"),
 ]
 
+# Rotas públicas do user-service (não exigem token)
+PUBLIC_USER_ROUTES = {"/register", "/login", "/health"}
+
 
 def get_required_role(method: str, path: str):
-    """Retorna a role exigida para a combinação método+path, ou None se pública."""
     for rule_method, rule_prefix, role in ROUTE_RULES:
         if method == rule_method and path.startswith(rule_prefix):
             return role
@@ -89,7 +80,6 @@ def get_required_role(method: str, path: str):
 
 
 def extrair_usuario_do_token(authorization: str | None) -> dict | None:
-    """Decodifica o JWT sem lançar exceção — retorna None se inválido."""
     if not authorization or not authorization.startswith("Bearer "):
         return None
     try:
@@ -101,26 +91,56 @@ def extrair_usuario_do_token(authorization: str | None) -> dict | None:
 
 async def proxy(request: Request, service: str, path: str):
     """Encaminha a requisição para o serviço correto."""
-    # ── TRACING: gera ou repassa X-Request-ID ────────────────
     request_id = request.headers.get("x-request-id") or str(uuid.uuid4())
 
-    # ── AUTENTICAÇÃO / AUTORIZAÇÃO ───────────────────────────
-    full_path  = f"/{path}" if path else f"/{service}"
-    route_path = f"/{service}{('/' + path) if path else ''}"
+    # Monta o path completo para checar as regras
+    route_path = f"/{service}/{path}" if path else f"/{service}"
+
+    # ── Autorização ───────────────────────────────────────────
+    # Para user-service, rotas /register, /login, /health são públicas
+    sub_path = f"/{path}" if path else "/"
+    is_public_user = service == "users" and any(
+        sub_path == r or sub_path.startswith(r + "/") for r in PUBLIC_USER_ROUTES
+    )
+
     required_role = get_required_role(request.method, f"/{service}")
 
-    auth_header = request.headers.get("authorization")
+    auth_header  = request.headers.get("authorization")
     user_payload = extrair_usuario_do_token(auth_header)
 
-    if required_role:
+    if required_role and not is_public_user:
         if not user_payload:
             raise HTTPException(401, "Autenticação necessária. Faça login e use o token retornado.")
         if required_role == "admin" and user_payload.get("role") != "admin":
-            raise HTTPException(403, "Acesso negado. Apenas administradores podem executar esta ação.")
+            raise HTTPException(403, "Acesso negado. Apenas administradores.")
 
-    # ── PROXY ────────────────────────────────────────────────
+    # ── Proxy com retry round-robin ───────────────────────────
+    # Regra de roteamento:
+    # - user-service: rotas internas NAO tem prefixo /users/
+    #     /users/login  -> http://localhost:8001/login
+    #     /users/register -> http://localhost:8001/register
+    #     /users        -> http://localhost:8001/users  (listar, admin)
+    # - event-service e purchase-service: rotas internas TEM o prefixo
+    #     /events       -> http://localhost:8002/events
+    #     /events/5     -> http://localhost:8002/events/5
+    #     /purchases    -> http://localhost:8003/purchases
     target = get_next_instance(service)
-    url    = f"{target}/{path}"
+
+    def build_url(t: str) -> str:
+        if service == "users":
+            # user-service nao tem prefixo: /users/login -> /login
+            if path:
+                return f"{t}/{path}"
+            else:
+                return f"{t}/users"   # GET /users (listagem admin)
+        else:
+            # event-service e purchase-service tem prefixo proprio
+            if path:
+                return f"{t}/{service}/{path}"
+            else:
+                return f"{t}/{service}"
+
+    url = build_url(target)
     if request.url.query:
         url += f"?{request.url.query}"
 
@@ -132,10 +152,10 @@ async def proxy(request: Request, service: str, path: str):
 
     body = await request.body()
 
-    # Headers repassados para o serviço interno
+    # Headers repassados ao serviço interno
     internal_headers = {
-        "Content-Type":   "application/json",
-        "X-Request-ID":   request_id,
+        "Content-Type":  "application/json",
+        "X-Request-ID":  request_id,
     }
     if user_payload:
         internal_headers["X-User-ID"]   = str(user_payload.get("sub", ""))
@@ -155,16 +175,14 @@ async def proxy(request: Request, service: str, path: str):
                 status_code = resp.status_code,
                 content     = resp.json()
             )
-            # Propaga o X-Request-ID na resposta para o cliente rastrear
             response.headers["X-Request-ID"] = request_id
             return response
         except httpx.ConnectError:
             logger.warning(
-                f"[LB] {target} inacessível, tentativa {attempt}/3, "
-                f"alternando instância... | request_id={request_id}"
+                f"[LB] {target} inacessível, tentativa {attempt}/3 | request_id={request_id}"
             )
             target = get_next_instance(service)
-            url    = f"{target}/{path}"
+            url = build_url(target)
             if request.url.query:
                 url += f"?{request.url.query}"
             time.sleep(0.2)
@@ -175,7 +193,7 @@ async def proxy(request: Request, service: str, path: str):
     raise HTTPException(503, f"Serviço '{service}' indisponível após 3 tentativas.")
 
 
-# ── Rotas ─────────────────────────────────────────────────────
+# ── Health / Status ───────────────────────────────────────────
 
 @app.get("/health")
 async def health():
@@ -184,7 +202,6 @@ async def health():
 
 @app.get("/status")
 async def status():
-    """Verifica status de todos os serviços."""
     resultado = {}
     todos = [
         ("user-service-1",       "http://localhost:8001"),
@@ -206,32 +223,29 @@ async def status():
     return resultado
 
 
-# ── Rotas de usuários ─────────────────────────────────────────
-@app.api_route("/users/{path:path}", methods=["GET","POST","PUT","DELETE"])
+# ── Rotas ─────────────────────────────────────────────────────
+
+@app.api_route("/users/{path:path}", methods=["GET", "POST", "PUT", "DELETE"])
 async def route_users(request: Request, path: str):
     return await proxy(request, "users", path)
 
-@app.api_route("/users", methods=["GET","POST"])
+@app.api_route("/users", methods=["GET", "POST"])
 async def route_users_root(request: Request):
     return await proxy(request, "users", "")
 
-
-# ── Rotas de eventos ──────────────────────────────────────────
-@app.api_route("/events/{path:path}", methods=["GET","POST","PUT","DELETE"])
+@app.api_route("/events/{path:path}", methods=["GET", "POST", "PUT", "DELETE"])
 async def route_events(request: Request, path: str):
     return await proxy(request, "events", path)
 
-@app.api_route("/events", methods=["GET","POST"])
+@app.api_route("/events", methods=["GET", "POST"])
 async def route_events_root(request: Request):
     return await proxy(request, "events", "")
 
-
-# ── Rotas de compras ──────────────────────────────────────────
-@app.api_route("/purchases/{path:path}", methods=["GET","POST","PUT","DELETE"])
+@app.api_route("/purchases/{path:path}", methods=["GET", "POST", "PUT", "DELETE"])
 async def route_purchases(request: Request, path: str):
     return await proxy(request, "purchases", path)
 
-@app.api_route("/purchases", methods=["GET","POST"])
+@app.api_route("/purchases", methods=["GET", "POST"])
 async def route_purchases_root(request: Request):
     return await proxy(request, "purchases", "")
 

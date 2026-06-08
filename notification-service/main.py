@@ -22,8 +22,13 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 
 
 class NotificationRequest(BaseModel):
-    purchase_id: int; transaction_id: str; user_id: int
-    event_name: str; quantity: int; total_price: float; payment_method: str
+    purchase_id:    int
+    transaction_id: str
+    user_id:        int
+    event_name:     str
+    quantity:       int
+    total_price:    float
+    payment_method: str
 
 
 @app.get("/health")
